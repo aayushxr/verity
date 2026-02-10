@@ -6,6 +6,7 @@ build:
 ifeq ($(shell uname), Darwin)
 	@echo "macOS detected — building inside Docker"
 	docker run --rm --privileged \
+		--platform linux/amd64 \
 		-v "$(CURDIR)":/verity \
 		-w /verity \
 		alpine:3.21 \
