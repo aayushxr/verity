@@ -1,0 +1,64 @@
+#!/bin/sh
+
+# Verity — initramfs init
+# Loads modules, finds boot media, mounts squashfs, pivot-roots into the real system.
+
+/bin/busybox mkdir -p /proc /sys /dev /tmp /newroot
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sys /sys
+/bin/busybox mount -t devtmpfs dev /dev
+
+echo "verity-initramfs: loading modules"
+
+# Load filesystem and block device modules
+for mod in squashfs loop isofs sr_mod cdrom virtio_blk virtio_pci virtio_scsi; do
+    /bin/busybox modprobe "$mod" 2>/dev/null || true
+done
+
+# Wait briefly for device nodes to settle
+/bin/busybox sleep 1
+
+echo "verity-initramfs: scanning for boot media"
+
+# Scan block devices for our squashfs
+FOUND=""
+for dev in /dev/sr0 /dev/vda /dev/vdb /dev/sda /dev/sdb; do
+    [ -b "$dev" ] || continue
+    /bin/busybox mkdir -p /tmp/mnt
+    if /bin/busybox mount -t iso9660 -o ro "$dev" /tmp/mnt 2>/dev/null; then
+        if [ -f /tmp/mnt/rootfs.squashfs ]; then
+            FOUND="$dev"
+            break
+        fi
+        /bin/busybox umount /tmp/mnt
+    fi
+done
+
+if [ -z "$FOUND" ]; then
+    echo "verity-initramfs: FATAL — rootfs.squashfs not found on any device"
+    echo "verity-initramfs: available block devices:"
+    /bin/busybox ls -la /dev/sr* /dev/vd* /dev/sd* 2>/dev/null
+    /bin/busybox sh  # drop to emergency shell
+    exit 1
+fi
+
+echo "verity-initramfs: found rootfs on $FOUND"
+
+# Mount the squashfs
+/bin/busybox losetup /dev/loop0 /tmp/mnt/rootfs.squashfs
+/bin/busybox mount -t squashfs -o ro /dev/loop0 /newroot
+
+if [ ! -x /newroot/sbin/init ]; then
+    echo "verity-initramfs: FATAL — /sbin/init not found in squashfs"
+    /bin/busybox sh
+    exit 1
+fi
+
+echo "verity-initramfs: switching root"
+
+# Clean up initramfs mounts
+/bin/busybox umount /proc
+/bin/busybox umount /sys
+/bin/busybox umount /dev
+
+exec /bin/busybox switch_root /newroot /sbin/init

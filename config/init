@@ -1,0 +1,31 @@
+#!/bin/sh
+
+# Verity — PID 1 init
+# Brings up networking, applies hardening, runs nginx as the only service.
+
+# Mount essential filesystems
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+
+# Writable tmpfs mounts
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /var/log
+mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+mkdir -p /var/log/nginx /run/nginx
+
+# Remount root as read-only
+mount -o remount,ro /
+
+# Networking
+ip link set lo up
+ip link set eth0 up 2>/dev/null
+udhcpc -i eth0 -s /usr/share/udhcpc/default.script -b -q 2>/dev/null
+
+# Apply sysctl hardening
+sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
+
+echo "verity: starting nginx"
+
+# Exec replaces this process — nginx becomes PID 1
+exec nginx -g "daemon off;"
