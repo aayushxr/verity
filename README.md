@@ -1,6 +1,20 @@
 # verity
 
-A minimal, hardened Alpine Linux ISO that boots directly into nginx. No shell, no package manager, no SSH — just a static file server on a read-only root filesystem.
+A sovereign, hardened Alpine Linux ISO that boots directly into nginx. No shell, no package manager, no SSH — just a static file server on a read-only root filesystem.
+
+## What is sovereignty?
+
+Most servers are held together by trust in things you don't control — upstream repos, package managers, update daemons, shell access that "probably nobody will use." Every one of those is an assumption, and every assumption is a surface.
+
+Sovereignty means your server runs exactly what you built, nothing more. Verity achieves this by eliminating every component that isn't strictly necessary to serve files:
+
+- **No package manager.** apk is deleted after build. Nothing can be installed at runtime.
+- **No shell.** There is no way to get an interactive session. No SSH, no TTY, no login.
+- **No mutation.** The root filesystem is squashfs — read-only by nature, not by policy. There is no `remount,rw`.
+- **No ambient authority.** Kernel module loading is disabled after boot. ptrace is restricted. kexec is off.
+- **No opinions you didn't choose.** The entire system is ~400 lines of shell across a handful of files. You can read all of it in one sitting.
+
+The result is a machine that does one thing, can't be told to do anything else, and can be fully understood by one person.
 
 ## Quick start
 
