@@ -1,6 +1,9 @@
-.PHONY: build test clean
+.PHONY: build test clean configure
 
 ISO := build/verity.iso
+
+configure:
+	sh scripts/configure.sh
 
 build:
 ifeq ($(shell uname), Darwin)
@@ -23,4 +26,3 @@ $(ISO):
 
 clean:
 	rm -rf build/
-

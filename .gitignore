@@ -2,6 +2,12 @@
 build/
 *.iso
 
+# Generated config
+verity.conf
+
+# Node.js
+app/node_modules/
+
 # OS
 .DS_Store
 

@@ -1,0 +1,10 @@
+{
+  "name": "verity-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Verity API server",
+  "main": "server.js",
+  "dependencies": {
+    "pg": "^8.13.0"
+  }
+}
