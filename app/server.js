@@ -1,4 +1,5 @@
 const http = require("http");
+const os = require("os");
 
 const PORT = 3000;
 const HOST = "127.0.0.1";
@@ -47,12 +48,50 @@ function handleInfo(_req, res) {
   });
 }
 
+function handleVitals(_req, res) {
+  // Find local IPv4 address: prefer eth0, fall back to any non-internal
+  let ip = null;
+  const ifaces = os.networkInterfaces();
+  if (ifaces.eth0) {
+    const v4 = ifaces.eth0.find((i) => i.family === "IPv4" && !i.internal);
+    if (v4) ip = v4.address;
+  }
+  if (!ip) {
+    for (const addrs of Object.values(ifaces)) {
+      const v4 = addrs.find((i) => i.family === "IPv4" && !i.internal);
+      if (v4) {
+        ip = v4.address;
+        break;
+      }
+    }
+  }
+
+  const cpus = os.cpus();
+  json(res, 200, {
+    hostname: os.hostname(),
+    ip: ip || "unknown",
+    uptime: os.uptime(),
+    load: os.loadavg(),
+    cpu: { model: cpus[0]?.model || "unknown", cores: cpus.length },
+    memory: {
+      total: os.totalmem(),
+      free: os.freemem(),
+      used: os.totalmem() - os.freemem(),
+    },
+    platform: os.platform(),
+    arch: os.arch(),
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/api/health") {
     return handleHealth(req, res);
   }
   if (req.method === "GET" && req.url === "/api/info") {
     return handleInfo(req, res);
+  }
+  if (req.method === "GET" && req.url === "/api/vitals") {
+    return handleVitals(req, res);
   }
   json(res, 404, { error: "not found" });
 });
