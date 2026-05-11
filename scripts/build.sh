@@ -147,25 +147,35 @@ log "Installing packages"
 chroot "$WORK_DIR/rootfs" /bin/sh <<'CHROOT_EOF'
 set -e
 apk update
+
+# Required base packages — fail loud if any are missing.
 apk add --no-cache \
     nginx \
     linux-lts \
     busybox-static \
     kmod \
     tzdata \
-    ca-certificates \
+    ca-certificates
+
+# Firmware subpackages — try each individually so the build doesn't fail
+# when Alpine renames or drops a subpackage (e.g. myri10ge removed in 3.21).
+for fw in \
     linux-firmware-bnx2 \
     linux-firmware-bnx2x \
     linux-firmware-cxgb3 \
     linux-firmware-cxgb4 \
     linux-firmware-intel \
     linux-firmware-mellanox \
-    linux-firmware-myri10ge \
     linux-firmware-netronome \
     linux-firmware-other \
     linux-firmware-qed \
     linux-firmware-qlogic \
     linux-firmware-tigon
+do
+    apk add --no-cache "$fw" 2>/dev/null \
+        || echo "verity: skipping unavailable firmware package: $fw"
+done
+
 adduser -D -H -s /sbin/nologin nginx 2>/dev/null || true
 mkdir -p /var/www/html /var/log/nginx /run/nginx
 chown -R nginx:nginx /var/www/html /var/log/nginx /run/nginx
