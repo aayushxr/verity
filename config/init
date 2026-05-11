@@ -1,31 +1,46 @@
 #!/bin/sh
 
 # Verity — PID 1 init
-# Brings up networking, applies hardening, runs nginx as the only service.
+# Brings up networking on the first available link, applies hardening,
+# replaces itself with nginx.
 
-# Mount essential filesystems
 mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
 
-# Writable tmpfs mounts
 mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
 mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /var/log
 mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
 mkdir -p /var/log/nginx /run/nginx
 
-# Remount root as read-only
 mount -o remount,ro /
 
-# Networking
-ip link set lo up
-ip link set eth0 up 2>/dev/null
-udhcpc -i eth0 -s /usr/share/udhcpc/default.script -b -q 2>/dev/null
+# --- Networking ---
+# Bring up loopback unconditionally; pick the first non-loopback link with a
+# carrier. Falls back to whichever non-loopback link exists if none report
+# carrier yet (link state lags driver init on some NICs).
 
-# Apply sysctl hardening
+ip link set lo up
+
+IFACE=""
+for path in /sys/class/net/*; do
+    name=$(basename "$path")
+    [ "$name" = "lo" ] && continue
+    ip link set "$name" up 2>/dev/null
+    if [ "$(cat "$path/carrier" 2>/dev/null)" = "1" ]; then
+        IFACE="$name"
+        break
+    fi
+    [ -z "$IFACE" ] && IFACE="$name"
+done
+
+if [ -n "$IFACE" ]; then
+    echo "verity: requesting DHCP on $IFACE"
+    udhcpc -i "$IFACE" -s /usr/share/udhcpc/default.script -b -q 2>/dev/null
+fi
+
+# --- Kernel hardening ---
 sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
 
 echo "verity: starting nginx"
-
-# Exec replaces this process — nginx becomes PID 1
 exec nginx -g "daemon off;"

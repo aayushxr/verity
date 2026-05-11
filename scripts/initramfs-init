@@ -1,64 +1,135 @@
 #!/bin/sh
 
 # Verity — initramfs init
-# Loads modules, finds boot media, mounts squashfs, pivot-roots into the real system.
+# 1. Load storage + NIC kernel modules.
+# 2. If `verity.rootfs=http(s)://...` is on the kernel cmdline, bring up
+#    networking and fetch the squashfs over HTTP (PXE / netboot mode).
+# 3. Otherwise scan every block device for rootfs.squashfs (CD, USB, virtual
+#    media, local disk).
+# 4. Loop-mount the squashfs read-only and switch_root into /sbin/init.
 
-/bin/busybox mkdir -p /proc /sys /dev /tmp /newroot
-/bin/busybox mount -t proc proc /proc
-/bin/busybox mount -t sysfs sys /sys
-/bin/busybox mount -t devtmpfs dev /dev
+BB=/bin/busybox
 
-echo "verity-initramfs: loading modules"
+$BB mkdir -p /proc /sys /dev /tmp /newroot /etc
+$BB mount -t proc proc /proc
+$BB mount -t sysfs sys /sys
+$BB mount -t devtmpfs dev /dev
 
-# Load filesystem and block device modules
-for mod in squashfs loop isofs sr_mod cdrom virtio_blk virtio_pci virtio_scsi; do
-    /bin/busybox modprobe "$mod" 2>/dev/null || true
+log() { echo "verity-initramfs: $*"; }
+panic() {
+    echo "verity-initramfs: FATAL — $*"
+    log "available block devices:"
+    $BB ls -la /dev/sr* /dev/vd* /dev/sd* /dev/nvme* 2>/dev/null
+    log "dropping to emergency shell"
+    exec $BB sh
+}
+
+log "loading kernel modules"
+# All known storage + NIC modules. modprobe -q swallows missing entries.
+for mod in \
+    squashfs loop isofs overlay dm-mod cdrom sr_mod \
+    sd_mod nvme nvme_core ahci libahci \
+    usb_storage uas xhci_hcd xhci_pci ehci_hcd ehci_pci ohci_hcd ohci_pci \
+    mmc_block sdhci sdhci_pci \
+    megaraid_sas mpt3sas mptsas hpsa aacraid \
+    virtio_blk virtio_pci virtio_scsi virtio_net \
+    e1000 e1000e igb igc ixgbe ixgbevf i40e ice \
+    bnx2 bnx2x bnxt_en tg3 r8169 atlantic qede \
+    mlx4_core mlx4_en mlx5_core
+do
+    $BB modprobe -q "$mod" 2>/dev/null || true
 done
 
-# Wait briefly for device nodes to settle
-/bin/busybox sleep 1
+# Let udev-less devtmpfs settle (USB enumeration is the slowest path).
+$BB sleep 2
 
-echo "verity-initramfs: scanning for boot media"
+# --- Parse kernel cmdline -------------------------------------------------
 
-# Scan block devices for our squashfs
-FOUND=""
-for dev in /dev/sr0 /dev/vda /dev/vdb /dev/sda /dev/sdb; do
-    [ -b "$dev" ] || continue
-    /bin/busybox mkdir -p /tmp/mnt
-    if /bin/busybox mount -t iso9660 -o ro "$dev" /tmp/mnt 2>/dev/null; then
-        if [ -f /tmp/mnt/rootfs.squashfs ]; then
-            FOUND="$dev"
-            break
-        fi
-        /bin/busybox umount /tmp/mnt
-    fi
+ROOTFS_URL=""
+for arg in $($BB cat /proc/cmdline); do
+    case "$arg" in
+        verity.rootfs=*) ROOTFS_URL="${arg#verity.rootfs=}" ;;
+    esac
 done
 
-if [ -z "$FOUND" ]; then
-    echo "verity-initramfs: FATAL — rootfs.squashfs not found on any device"
-    echo "verity-initramfs: available block devices:"
-    /bin/busybox ls -la /dev/sr* /dev/vd* /dev/sd* 2>/dev/null
-    /bin/busybox sh  # drop to emergency shell
-    exit 1
+mount_squashfs() {
+    # $1 = path to squashfs file
+    $BB losetup /dev/loop0 "$1" || panic "losetup failed for $1"
+    $BB mount -t squashfs -o ro /dev/loop0 /newroot \
+        || panic "squashfs mount failed for $1"
+}
+
+# --- PXE / HTTP path ------------------------------------------------------
+
+if [ -n "$ROOTFS_URL" ]; then
+    log "PXE mode — fetching rootfs from $ROOTFS_URL"
+
+    # Bring up the first non-loopback link, request DHCP.
+    IFACE=""
+    for path in /sys/class/net/*; do
+        name=$($BB basename "$path")
+        [ "$name" = "lo" ] && continue
+        IFACE="$name"
+        break
+    done
+    [ -n "$IFACE" ] || panic "no network interface found"
+
+    log "bringing up $IFACE"
+    $BB ip link set "$IFACE" up
+    $BB udhcpc -i "$IFACE" -s /usr/share/udhcpc/default.script -q -n -t 10 \
+        || panic "DHCP failed on $IFACE"
+
+    log "downloading squashfs"
+    $BB wget -O /tmp/rootfs.squashfs "$ROOTFS_URL" \
+        || panic "wget failed"
+
+    mount_squashfs /tmp/rootfs.squashfs
+
+# --- Local block-device path ---------------------------------------------
+
+else
+    log "scanning block devices for rootfs.squashfs"
+    $BB mkdir -p /tmp/mnt
+    FOUND=""
+
+    # Walk every block device exposed by sysfs (covers NVMe, SATA, USB, CD,
+    # virtio, HW-RAID — anything the kernel recognized).
+    for blk in /sys/block/*; do
+        name=$($BB basename "$blk")
+        case "$name" in
+            loop*|ram*|dm-*) continue ;;
+        esac
+        dev="/dev/$name"
+        [ -b "$dev" ] || continue
+
+        # Try the whole device first (CD/DVD/ISO image written to USB).
+        for candidate in "$dev" "${dev}1" "${dev}2" "${dev}p1" "${dev}p2"; do
+            [ -b "$candidate" ] || continue
+            $BB umount /tmp/mnt 2>/dev/null || true
+            for fs in iso9660 vfat ext4; do
+                if $BB mount -t "$fs" -o ro "$candidate" /tmp/mnt 2>/dev/null; then
+                    if [ -f /tmp/mnt/rootfs.squashfs ]; then
+                        FOUND="$candidate"
+                        break 3
+                    fi
+                    $BB umount /tmp/mnt 2>/dev/null || true
+                fi
+            done
+        done
+    done
+
+    [ -n "$FOUND" ] || panic "rootfs.squashfs not found on any device"
+    log "found rootfs on $FOUND"
+    mount_squashfs /tmp/mnt/rootfs.squashfs
 fi
 
-echo "verity-initramfs: found rootfs on $FOUND"
+# --- Pivot into the real root --------------------------------------------
 
-# Mount the squashfs
-/bin/busybox losetup /dev/loop0 /tmp/mnt/rootfs.squashfs
-/bin/busybox mount -t squashfs -o ro /dev/loop0 /newroot
+[ -x /newroot/sbin/init ] || panic "/sbin/init not found in squashfs"
 
-if [ ! -x /newroot/sbin/init ]; then
-    echo "verity-initramfs: FATAL — /sbin/init not found in squashfs"
-    /bin/busybox sh
-    exit 1
-fi
+log "switching root"
+$BB umount /proc
+$BB umount /sys
+$BB umount /dev
 
-echo "verity-initramfs: switching root"
-
-# Clean up initramfs mounts
-/bin/busybox umount /proc
-/bin/busybox umount /sys
-/bin/busybox umount /dev
-
-exec /bin/busybox switch_root /newroot /sbin/init
+exec $BB switch_root /newroot /sbin/init
