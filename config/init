@@ -42,5 +42,24 @@ fi
 # --- Kernel hardening ---
 sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
 
-echo "verity: starting nginx"
+# --- Banner ---
+# Resolve the first IPv4 we can find on a non-loopback link.
+IPV4=""
+if [ -n "$IFACE" ]; then
+    IPV4=$(ip -4 -o addr show dev "$IFACE" 2>/dev/null \
+        | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+fi
+
+echo ""
+echo "╔══════════════════════════════════════════╗"
+echo "║          verity is running!              ║"
+echo "╚══════════════════════════════════════════╝"
+if [ -n "$IPV4" ]; then
+    echo "  connect:  http://$IPV4/"
+    echo "  iface:    $IFACE"
+else
+    echo "  no IPv4 lease — check DHCP / cable / link"
+fi
+echo ""
+
 exec nginx -g "daemon off;"
