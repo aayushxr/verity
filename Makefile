@@ -2,16 +2,10 @@
 
 ISO := build/verity.iso
 
-# Build-time deps installed inside the Alpine container on macOS:
-#   bash wget         download + scripting
-#   xorriso           hybrid ISO assembly
-#   squashfs-tools    read-only root image
-#   cpio gzip         initramfs packaging
-#   syslinux          BIOS bootloader (ISOLINUX + isohdpfx)
-#   grub-efi          UEFI bootloader (grub-mkstandalone)
-#   mtools dosfstools FAT image for the EFI El Torito entry
-#   kmod              depmod for module-dependency resolution
-DOCKER_DEPS := bash wget xorriso squashfs-tools cpio syslinux grub-efi mtools dosfstools kmod
+# build.sh auto-installs its own deps (xorriso, squashfs-tools, syslinux,
+# grub-efi, mtools, dosfstools, kmod, cpio, wget) on apk/apt/dnf/yum systems.
+# On macOS the Alpine container needs `bash` first because the script is
+# `#!/bin/bash` and uses bash-isms.
 
 build:
 ifeq ($(shell uname), Darwin)
@@ -21,7 +15,7 @@ ifeq ($(shell uname), Darwin)
 		-v "$(CURDIR)":/verity \
 		-w /verity \
 		alpine:3.21 \
-		sh -c "apk add --no-cache $(DOCKER_DEPS) && bash scripts/build.sh"
+		sh -c "apk add --no-cache bash && bash scripts/build.sh"
 else
 	sudo bash scripts/build.sh
 endif

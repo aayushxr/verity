@@ -39,8 +39,71 @@ trap cleanup EXIT
 
 [ "$EUID" -eq 0 ] || error "Must run as root"
 
-for cmd in wget xorriso mksquashfs cpio mkfs.vfat mcopy mmd grub-mkstandalone; do
-    command -v "$cmd" >/dev/null || error "Missing dependency: $cmd"
+# --- Auto-install build dependencies ---
+# Each entry is "binary:apk_pkg:apt_pkg:dnf_pkg". We probe for the binary;
+# if missing, we install via whichever package manager is available.
+
+DEPS="
+    wget:wget:wget:wget
+    xorriso:xorriso:xorriso:xorriso
+    mksquashfs:squashfs-tools:squashfs-tools:squashfs-tools
+    cpio:cpio:cpio:cpio
+    mkfs.vfat:dosfstools:dosfstools:dosfstools
+    mcopy:mtools:mtools:mtools
+    mmd:mtools:mtools:mtools
+    grub-mkstandalone:grub-efi:grub-efi-amd64-bin:grub2-efi-x64-modules
+    depmod:kmod:kmod:kmod
+    isohybrid:syslinux:syslinux-utils:syslinux
+"
+
+detect_pm() {
+    if   command -v apk >/dev/null; then echo apk
+    elif command -v apt-get >/dev/null; then echo apt
+    elif command -v dnf >/dev/null; then echo dnf
+    elif command -v yum >/dev/null; then echo yum
+    else echo ""
+    fi
+}
+
+install_pkgs() {
+    local pm="$1"; shift
+    case "$pm" in
+        apk) apk add --no-cache "$@" ;;
+        apt) DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+             && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" ;;
+        dnf) dnf install -y "$@" ;;
+        yum) yum install -y "$@" ;;
+    esac
+}
+
+PM=$(detect_pm)
+MISSING=""
+for entry in $DEPS; do
+    bin="${entry%%:*}"
+    rest="${entry#*:}"
+    apk_pkg="${rest%%:*}"; rest="${rest#*:}"
+    apt_pkg="${rest%%:*}"; rest="${rest#*:}"
+    dnf_pkg="${rest%%:*}"
+    if ! command -v "$bin" >/dev/null; then
+        case "$PM" in
+            apk) MISSING="$MISSING $apk_pkg" ;;
+            apt) MISSING="$MISSING $apt_pkg" ;;
+            dnf|yum) MISSING="$MISSING $dnf_pkg" ;;
+            "") error "Missing dependency: $bin (and no supported package manager: apk/apt/dnf/yum)" ;;
+        esac
+    fi
+done
+
+if [ -n "$MISSING" ]; then
+    log "Installing build deps via $PM:$MISSING"
+    install_pkgs "$PM" $MISSING || error "Failed to install build deps via $PM"
+fi
+
+# Final verification — every binary must now be on PATH.
+for entry in $DEPS; do
+    bin="${entry%%:*}"
+    command -v "$bin" >/dev/null \
+        || error "Dependency still missing after install: $bin"
 done
 
 # --- Workspace ---
