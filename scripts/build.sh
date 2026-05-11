@@ -106,6 +106,19 @@ for entry in $DEPS; do
         || error "Dependency still missing after install: $bin"
 done
 
+# Syslinux data files live in package-specific paths that aren't on PATH.
+# If we can't find isohdpfx.bin anywhere, try installing syslinux again
+# (covers distros that split it into subpackages).
+if ! find /usr /boot -name isohdpfx.bin -type f 2>/dev/null | grep -q .; then
+    log "Syslinux data files missing — installing syslinux package"
+    case "$PM" in
+        apk) apk add --no-cache syslinux ;;
+        apt) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                 syslinux syslinux-common isolinux ;;
+        dnf|yum) "$PM" install -y syslinux ;;
+    esac
+fi
+
 # --- Workspace ---
 
 log "Setting up workspace"
@@ -356,30 +369,33 @@ LABEL verity
     APPEND $KCMD
 EOF
 
-ISOLINUX_BIN=""
-for path in \
-    /usr/lib/syslinux/bios/isolinux.bin \
-    /usr/lib/ISOLINUX/isolinux.bin \
-    /usr/share/syslinux/isolinux.bin; do
-    [ -f "$path" ] && { ISOLINUX_BIN="$path"; break; }
-done
-[ -n "$ISOLINUX_BIN" ] || error "isolinux.bin not found — install syslinux"
+# Locate a syslinux data file by name across known paths, falling back to
+# `find` for distros that put files somewhere weird.
+locate_syslinux() {
+    local name="$1"
+    for path in \
+        /usr/lib/syslinux/bios/"$name" \
+        /usr/lib/syslinux/modules/bios/"$name" \
+        /usr/lib/ISOLINUX/"$name" \
+        /usr/share/syslinux/"$name" \
+        /usr/share/syslinux/modules/bios/"$name"; do
+        [ -f "$path" ] && { echo "$path"; return 0; }
+    done
+    find /usr /boot -name "$name" -type f 2>/dev/null | head -n 1
+}
+
+ISOLINUX_BIN=$(locate_syslinux isolinux.bin)
+if [ -z "$ISOLINUX_BIN" ]; then
+    log "syslinux directory contents (for diagnosis):"
+    ls -la /usr/share/syslinux/ /usr/lib/syslinux/ /usr/lib/ISOLINUX/ 2>/dev/null || true
+    error "isolinux.bin not found — install syslinux + syslinux-bios"
+fi
 cp "$ISOLINUX_BIN" "$WORK_DIR/iso/boot/isolinux/"
 
-for path in \
-    /usr/lib/syslinux/bios/ldlinux.c32 \
-    /usr/lib/syslinux/modules/bios/ldlinux.c32 \
-    /usr/share/syslinux/ldlinux.c32; do
-    [ -f "$path" ] && { cp "$path" "$WORK_DIR/iso/boot/isolinux/"; break; }
-done
+LDLINUX=$(locate_syslinux ldlinux.c32)
+[ -n "$LDLINUX" ] && cp "$LDLINUX" "$WORK_DIR/iso/boot/isolinux/"
 
-ISOHDPFX=""
-for path in \
-    /usr/share/syslinux/isohdpfx.bin \
-    /usr/lib/syslinux/bios/isohdpfx.bin \
-    /usr/lib/ISOLINUX/isohdpfx.bin; do
-    [ -f "$path" ] && { ISOHDPFX="$path"; break; }
-done
+ISOHDPFX=$(locate_syslinux isohdpfx.bin)
 [ -n "$ISOHDPFX" ] || error "isohdpfx.bin not found — install syslinux"
 
 # --- UEFI bootloader (GRUB EFI) ---
